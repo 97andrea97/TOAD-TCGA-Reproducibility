@@ -1,0 +1,27 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it."
+title: "Fully reproducible TOAD learning curves on TCGA for primary site classification (ResNet-50 vs UNI)"
+type: software
+license: AGPL-3.0
+authors:
+  - given-names: "Andrea"
+    family-names: "Espis"
+  - given-names: "Ilaria"
+    family-names: "Pace"
+  - given-names: "Manuela"
+    family-names: "Ferracin"
+  - given-names: "Stefano"
+    family-names: "Diciotti"
+repository-code: "<ADD_GITHUB_URL>"
+doi: "<ADD_ZENODO_DOI_OR_EMPTY>"
+abstract: >
+  Deep learning models for cancer histopathology are increasingly used to classify the primary site of origin, yet many existing approaches remain difficult to reproduce because the models themselves and their underlying training data are not fully accessible. As a result, it is often unclear how much data these methods require and how their accuracy degrades in limited- training data settings—a common scenario for many research groups. In this study, we provide a fully reproducible evaluation of the Tumor Origin Assessment via Deep Learning (TOAD) framework using only whole-slide images from the public The Cancer Genome Atlas (TCGA) repository. By systematically varying the amount of training data, we construct detailed learning curves that quantify how performance scales across data regimes. Our results show that a TCGA-only TOAD reproduction recovers much of the original model’s global performance and that per-class data requirements vary substantially across tissue types. We also compare two image encoders—a ResNet-50 pretrained on natural images and UNI, a pathology foundation model trained on large-scale histopathology data—and find that UNI consistently improves data efficiency, achieving equal or higher performance with substantially fewer training slides, especially in low- and medium-training data regimes. All code is released in containerized form to ensure strict reproducibility, and we provide a ready-to-use TCGA-trained TOAD model for immediate application. Overall, this work delivers the first open, data-driven benchmark of the TOAD framework on TCGA whole-slide images, clarifying its dependence on dataset size, identifying encoder-driven differences in data efficiency, and offering practical guidance for developing reproducible models for cancer site classification.
+keywords:
+  - histopathology
+  - whole-slide imaging
+  - TOAD
+  - TCGA
+  - learning curves
+  - reproducibility
+  - UNI
+  - CLAM

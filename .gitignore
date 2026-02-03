@@ -1,2 +1,81 @@
 **/.DS_Store
 __pycache__/
+
+*output*
+*.simg*
+*RESULTS*
+*my_notes.txt*
+
+# Ignore image files
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.tiff
+*.tif
+*.svg
+*.ico
+
+# Ignore tensor files
+*.pt
+*.pth
+*.ckpt
+
+# Ignore array files
+*.npy
+*.npz
+*.mat
+
+# Ignore archive files
+*.zip
+*.tar.gz
+*.rar
+*.7z
+*.bz2
+*.xz
+
+# Ignore Singularity container files
+*.sif
+*.img
+*.simg
+
+# Ignore Docker container files
+Dockerfile
+*.dockerfile
+*.tar
+
+# Ignore large data files
+*.h5
+*.hdf5
+*.tsv
+
+# Ignore other binary files
+*.bin
+*.exe
+*.dll
+*.so
+*.dylib
+*.o
+*.a
+*.out
+
+# Ignore large document formats
+*.pdf
+*.docx
+*.pptx
+*.xlsx
+
+# Ignore backup files
+*.bak
+*.tmp
+*.swp
+
+# Ignore Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Ignore virtual environment folders
+venv/
+env/
+.env/
+.venv/
