@@ -14,16 +14,23 @@ from urllib.parse import parse_qs, urlparse
 
 REPO = Path(__file__).resolve().parents[1]
 
+# Relative to repo root (as you requested)
 PREPROC_IMG_REL = Path("assets/containers/singularity_preprocessing.simg")
 TRAIN_EVAL_IMG_REL = Path("assets/containers/singularity_train_eval.simg")
 DEFAULT_CKPT_REL = Path("assets/inference_model_checkpoint/TOAD_UNI_100.pt")
 
+# CLAM code directory (mounted read-only)
 CLAM_CODE_REL = Path("src_preprocessing/CLAM_encoder")
+
+# Output location (relative to repo root)
 OUT_ROOT_REL = Path("output/inference_GUI_runs")
 
 # UNI-only preprocessing settings
 FORCED_ENCODER = "uni_v1"
 FORCED_TARGET_PATCH_SIZE = "224"
+
+# If your CLAM wrapper has a different name/path, change here:
+CLAM_RUNNER = "run_clam_single_input.sh"
 
 ID2LABEL = {
     0: "Adrenal",
@@ -59,7 +66,7 @@ def mk_job_id(s: str) -> str:
 
 def job_log(job, msg: str):
     job["log"].append(msg)
-    job["log"] = job["log"][-160:]
+    job["log"] = job["log"][-220:]
 
 
 def set_step(job, step: str, state: str):
@@ -67,7 +74,40 @@ def set_step(job, step: str, state: str):
     job["steps"][step] = state
 
 
-def run_cmd_stream(job, cmd, env=None):
+def write_text(path: Path, s: str):
+    path.write_text(s, encoding="utf-8")
+
+
+def write_json(path: Path, obj):
+    path.write_text(json.dumps(obj, indent=2), encoding="utf-8")
+
+
+def _safe_int(s: str, default: int) -> int:
+    try:
+        v = int(str(s).strip())
+        return v
+    except Exception:
+        return default
+
+
+def _validate_batch_size(batch_size_str: str) -> str:
+    """
+    Return a safe batch size string. Enforce >0.
+    """
+    bs = _safe_int(batch_size_str, 800)
+    if bs <= 0:
+        bs = 800
+    # allow very large if user wants; the model/container will fail if too large anyway
+    return str(bs)
+
+
+def run_cmd_stream(job, cmd, env=None, slide_stem=None, meta_dir=None, feat_root=None):
+    """
+    Streams container stdout to GUI log.
+    Updates step states using:
+      (1) explicit 'echo' markers
+      (2) file existence heuristics (robust fallback)
+    """
     p = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
@@ -75,6 +115,7 @@ def run_cmd_stream(job, cmd, env=None):
         bufsize=0,
         env=env,
     )
+
     buf = ""
     while True:
         ch = p.stdout.read(1)
@@ -91,12 +132,29 @@ def run_cmd_stream(job, cmd, env=None):
                 job_log(job, line)
                 low = line.lower()
 
-                # Keep in sync with your run_clam_single_input.sh prints
+                # -------------- Step markers (from your bash echo lines) --------------
                 if "starting patch creation" in low:
                     set_step(job, "patching", "running")
-                if "starting feature extraction" in low:
+
+                elif "starting feature extraction" in low:
                     set_step(job, "patching", "done")
                     set_step(job, "feature_extraction", "running")
+
+                # -------------- Robust fallback: if outputs exist, update states --------------
+                # If patch h5 exists, patching is effectively done.
+                if slide_stem and meta_dir:
+                    h5_path = Path(meta_dir) / "patches" / f"{slide_stem}.h5"
+                    if h5_path.exists():
+                        # Only flip to done if it was pending/running
+                        if job["steps"].get("patching") in ("pending", "running"):
+                            set_step(job, "patching", "done")
+
+                # If pt exists, feature extraction is done.
+                if slide_stem and feat_root:
+                    pt_path = Path(feat_root) / "pt_files" / f"{slide_stem}.pt"
+                    if pt_path.exists():
+                        if job["steps"].get("feature_extraction") in ("pending", "running"):
+                            set_step(job, "feature_extraction", "done")
 
             buf = ""
         else:
@@ -104,14 +162,6 @@ def run_cmd_stream(job, cmd, env=None):
 
     p.wait()
     return p.returncode
-
-
-def write_text(path: Path, s: str):
-    path.write_text(s, encoding="utf-8")
-
-
-def write_json(path: Path, obj):
-    path.write_text(json.dumps(obj, indent=2), encoding="utf-8")
 
 
 def collect_slide_summary(preproc_img: Path, svs_path: Path) -> dict:
@@ -146,7 +196,7 @@ def collect_slide_summary(preproc_img: Path, svs_path: Path) -> dict:
 
 def make_thumbnail(preproc_img: Path, svs_path: Path, out_png: Path):
     """
-    Create a thumbnail once. The GUI will serve it as a static file thereafter.
+    Create a thumbnail ONCE. The GUI will serve it as a static file thereafter.
     """
     out_png.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
@@ -168,15 +218,15 @@ def make_thumbnail(preproc_img: Path, svs_path: Path, out_png: Path):
     subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
 
 
-def run_preprocessing(
-    job,
-    preproc_img: Path,
-    clam_code: Path,
-    svs_path: Path,
-    run_dir: Path,
-    gpu: str,
-    batch_size: str,
-):
+def run_preprocessing(job, preproc_img: Path, clam_code: Path, svs_path: Path, run_dir: Path,
+                      gpu: str, batch_size: str):
+    """
+    Runs your CLAM single-input wrapper inside the preprocessing container.
+
+    Guaranteed behaviors:
+    - batch_size coming from GUI is passed into bash wrapper
+    - step states are updated using BOTH log markers and file existence
+    """
     meta_root = run_dir / "logs_and_metadata"
     feat_root = run_dir / "FEATURES"
     meta_root.mkdir(parents=True, exist_ok=True)
@@ -188,6 +238,7 @@ def run_preprocessing(
     meta_dir = meta_root / f"{slide_stem}__{h}"
     meta_dir.mkdir(parents=True, exist_ok=True)
 
+    # ephemeral dir mounted to /app/input_data; we link the slide into it
     tmp_in = Path(subprocess.check_output(["mktemp", "-d"]).decode().strip())
 
     try:
@@ -196,11 +247,13 @@ def run_preprocessing(
         env["APPTAINERENV_CUDA_VISIBLE_DEVICES"] = gpu
         env["PYTHONUNBUFFERED"] = "1"
 
+        # Make GUI reflect what is really happening
         set_step(job, "patching", "running")
-        job_log(job, f"Preprocessing started (encoder={FORCED_ENCODER})...")
+        set_step(job, "feature_extraction", "pending")
+        job_log(job, f"Preprocessing started (encoder={FORCED_ENCODER}, batch_size={batch_size})...")
 
-        slide_file = svs_path.name
-
+        # Important: do NOT bind the slide file itself to /app/input_data because some systems create temp copies.
+        # Instead bind the parent read-only and symlink inside container -> fast and consistent.
         cmd = [
             "singularity", "exec", "--nv", "--cleanenv", "--containall",
             "--bind", f"{clam_code}:/app/CLAM:ro",
@@ -211,19 +264,29 @@ def run_preprocessing(
             str(preproc_img),
             "bash", "-lc",
             (
+                # link slide into /app/input_data
                 f"ln -sf /app/slide_parent/{slide_file} /app/input_data/{slide_file} && "
                 f"cd /app/CLAM && "
-                f"bash run_clam_single_input.sh "
+                f"test -f {CLAM_RUNNER} || (echo 'ERROR: missing {CLAM_RUNNER} in /app/CLAM' && exit 1) && "
+                # pass GUI batch size here (CONFIRMED)
+                f"bash {CLAM_RUNNER} "
                 f"/app/input_data /app/meta_out /app/features_out "
-                f"'{slide_file}' '{batch_size}' 'uni_v1' '224'"
+                f"'{slide_file}' '{batch_size}' '{FORCED_ENCODER}' '{FORCED_TARGET_PATCH_SIZE}'"
             )
         ]
 
-
-        rc = run_cmd_stream(job, cmd, env=env)
+        rc = run_cmd_stream(
+            job,
+            cmd,
+            env=env,
+            slide_stem=slide_stem,
+            meta_dir=meta_dir,
+            feat_root=feat_root
+        )
         if rc != 0:
             raise RuntimeError(f"Preprocessing failed (exit {rc}).")
 
+        # final authoritative states: if command ended successfully, both must be done
         set_step(job, "patching", "done")
         set_step(job, "feature_extraction", "done")
 
@@ -231,21 +294,14 @@ def run_preprocessing(
         if not pt_path.exists():
             raise RuntimeError(f"Expected features not found: {pt_path}")
 
-        return pt_path
+        return pt_path, meta_dir, feat_root
 
     finally:
         shutil.rmtree(tmp_in, ignore_errors=True)
 
 
-def run_inference(
-    job,
-    train_eval_img: Path,
-    ckpt_path: Path,
-    pt_path: Path,
-    out_json: Path,
-    gpu: str,
-    sex: str,
-):
+def run_inference(job, train_eval_img: Path, ckpt_path: Path, pt_path: Path, out_json: Path,
+                  gpu: str, sex: str):
     out_json.parent.mkdir(parents=True, exist_ok=True)
 
     pt_real = Path(pt_path).resolve()
@@ -274,7 +330,7 @@ def run_inference(
             f"--ckpt /app/model.pt "
             f"--sex {sex} "
             f"--out /app/out/{out_json.name}"
-        ),
+        )
     ]
 
     rc = run_cmd_stream(job, cmd, env=env)
@@ -298,7 +354,7 @@ def postprocess_pred(pred: dict):
     return fixed
 
 
-def write_run_summaries(run_dir: Path, job: dict, slide_summary: dict, pred_fixed: list):
+def write_run_summaries(run_dir: Path, job: dict, slide_summary: dict, pred_fixed: list, pt_path: Path):
     svs_p = Path(job["svs_path"])
     input_summary = {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
@@ -307,9 +363,11 @@ def write_run_summaries(run_dir: Path, job: dict, slide_summary: dict, pred_fixe
         "svs_size_bytes": int(svs_p.stat().st_size),
         "gpu": job["gpu"],
         "encoder": FORCED_ENCODER,
+        "target_patch_size": int(FORCED_TARGET_PATCH_SIZE),
         "batch_size": int(job["batch_size"]),
         "sex": int(job["sex"]),
         "checkpoint_path": str(job["ckpt_path"]),
+        "pt_path": str(pt_path),
         "slide": slide_summary,
     }
     write_json(run_dir / "input_summary.json", input_summary)
@@ -320,9 +378,11 @@ def write_run_summaries(run_dir: Path, job: dict, slide_summary: dict, pred_fixe
         f"svs_size_bytes: {input_summary['svs_size_bytes']}",
         f"gpu: {input_summary['gpu']}",
         f"encoder: {input_summary['encoder']}",
+        f"target_patch_size: {input_summary['target_patch_size']}",
         f"batch_size: {input_summary['batch_size']}",
         f"sex: {input_summary['sex']}",
         f"checkpoint_path: {input_summary['checkpoint_path']}",
+        f"pt_path: {input_summary['pt_path']}",
         f"dimensions: {slide_summary.get('dimensions')}",
         f"level_count: {slide_summary.get('level_count')}",
         "",
@@ -338,11 +398,11 @@ def write_run_summaries(run_dir: Path, job: dict, slide_summary: dict, pred_fixe
 
     txt_out = [f"timestamp: {output_summary['timestamp']}"]
     if pred_fixed:
-        txt_out.append(f"top_prediction: {pred_fixed[0]['label']} (p={pred_fixed[0]['prob']:.6f})")
+        txt_out.append(f"top_prediction: {pred_fixed[0]['label']} ({pred_fixed[0]['prob']*100:.2f}%)")
     txt_out.append("")
     txt_out.append("all_predictions:")
     for r in pred_fixed:
-        txt_out.append(f"- {r['label']}: {r['prob']:.6f}")
+        txt_out.append(f"- {r['label']}: {r['prob']*100:.2f}%")
     txt_out.append("")
     write_text(run_dir / "output_summary.txt", "\n".join(txt_out))
 
@@ -350,15 +410,21 @@ def write_run_summaries(run_dir: Path, job: dict, slide_summary: dict, pred_fixe
 def worker(job_id: str):
     job = JOBS[job_id]
     try:
+        # reset steps defensively
+        job["steps"] = {"patching": "pending", "feature_extraction": "pending", "inference": "pending"}
+
+        # Thumbnail
         job["status"] = "thumbnail"
         make_thumbnail(job["preproc_img"], job["svs_path"], job["run_dir"] / "thumbnail.png")
         job["thumb_ready"] = (job["run_dir"] / "thumbnail.png").exists()
 
+        # Slide summary
         slide_summary = collect_slide_summary(job["preproc_img"], job["svs_path"])
         write_json(job["run_dir"] / "slide_summary.json", slide_summary)
 
+        # Preprocessing
         job["status"] = "preprocessing"
-        pt_path = run_preprocessing(
+        pt_path, meta_dir, feat_root = run_preprocessing(
             job,
             job["preproc_img"],
             job["clam_code"],
@@ -369,6 +435,7 @@ def worker(job_id: str):
         )
         job["pt_path"] = str(pt_path)
 
+        # Inference
         job["status"] = "inference"
         out_json = job["run_dir"] / "pred.json"
         run_inference(job, job["train_eval_img"], job["ckpt_path"], pt_path, out_json, job["gpu"], job["sex"])
@@ -377,7 +444,7 @@ def worker(job_id: str):
         pred_fixed = postprocess_pred(pred)
         write_json(job["run_dir"] / "pred_fixed.json", pred_fixed)
 
-        write_run_summaries(job["run_dir"], job, slide_summary, pred_fixed)
+        write_run_summaries(job["run_dir"], job, slide_summary, pred_fixed, pt_path)
 
         job["pred_ready"] = True
         job["status"] = "done"
@@ -431,7 +498,7 @@ INDEX_HTML = r"""
     display: grid;
     grid-template-columns: 1.3fr 0.7fr;
     gap: 10px;
-    height: calc(100vh - 146px);
+    height: calc(100vh - 166px);
     margin-top: 10px;
   }
   .panel { border: 1px solid #ddd; border-radius: 10px; padding: 10px; box-sizing: border-box; overflow: hidden; }
@@ -474,12 +541,13 @@ INDEX_HTML = r"""
     margin-top: 8px;
   }
 
-  #probList { height: calc(100% - 24px); display: flex; flex-direction: column; gap: 6px; overflow: hidden; }
+  #probList { height: calc(100% - 48px); display: flex; flex-direction: column; gap: 6px; overflow: hidden; }
   .row { display: grid; grid-template-columns: 1fr 0.95fr; gap: 8px; align-items: center; }
   .label { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .barWrap { height: 14px; background: #eee; border-radius: 8px; overflow: hidden; position: relative; }
   .bar { height: 100%; background: #3b82f6; }
   .val { position: absolute; right: 6px; top: -1px; font-size: 11px; font-weight: 900; color: #111; }
+  .hint { font-size: 11px; color: #444; margin-bottom: 8px; line-height: 1.2; }
 </style>
 </head>
 
@@ -536,7 +604,10 @@ INDEX_HTML = r"""
     </div>
 
     <div class="panel">
-      <div style="font-size:12px; font-weight:900; margin-bottom:8px;">Tumor site prediction</div>
+      <div style="font-size:12px; font-weight:900; margin-bottom:6px;">Tumor site prediction</div>
+      <div class="hint">
+        If results look strange, verify the checkpoint was trained with UNI features
+      </div>
       <div id="probList"></div>
     </div>
   </div>
@@ -545,7 +616,7 @@ INDEX_HTML = r"""
   function setStatus(s){ document.getElementById("status").textContent = s; }
   function setErr(e){ document.getElementById("err").textContent = e ? (" — " + e) : ""; }
   function setLog(lines){
-    document.getElementById("log").textContent = (lines || []).slice(-14).join("\\n");
+    document.getElementById("log").textContent = (lines || []).slice(-18).join("\\n");
   }
 
   function iconFor(state){
@@ -618,7 +689,7 @@ INDEX_HTML = r"""
         document.getElementById("placeholder").style.display = "none";
         const img = document.getElementById("thumb");
         img.style.display = "block";
-        img.src = `/thumb?job_id=${job_id}`;   // fetch once
+        img.src = `/thumb?job_id=${job_id}`;   // fetch ONCE
         thumbShown = true;
       }
 
@@ -743,7 +814,7 @@ class Handler(BaseHTTPRequestHandler):
 
         svs_path = (form.getfirst("svs_path") or "").strip()
         gpu = (form.getfirst("gpu") or "0").strip()
-        batch_size = (form.getfirst("batch_size") or "800").strip()
+        batch_size = _validate_batch_size(form.getfirst("batch_size") or "800")
         sex = (form.getfirst("sex") or "0").strip()
 
         ckpt_path_in = (form.getfirst("checkpoint_path") or "").strip()
@@ -758,6 +829,10 @@ class Handler(BaseHTTPRequestHandler):
         ckpt_p = (REPO / ckpt_path_in).resolve() if not os.path.isabs(ckpt_path_in) else Path(ckpt_path_in).resolve()
         if not ckpt_p.exists():
             self._send(200, "application/json", json.dumps({"error": f"Checkpoint not found: {ckpt_path_in}"}).encode())
+            return
+
+        if sex not in ("0", "1"):
+            self._send(200, "application/json", json.dumps({"error": "Sex must be 0 (F) or 1 (M)"}).encode())
             return
 
         preproc_img = abs_in_repo(PREPROC_IMG_REL)
@@ -775,17 +850,13 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, "application/json", json.dumps({"error": f"Missing: {CLAM_CODE_REL}"}).encode())
             return
 
-        if sex not in ("0", "1"):
-            self._send(200, "application/json", json.dumps({"error": "Sex must be 0 (F) or 1 (M)"}).encode())
-            return
-
         out_root.mkdir(parents=True, exist_ok=True)
 
         run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
         run_dir = (out_root / run_id).resolve()
         run_dir.mkdir(parents=True, exist_ok=True)
 
-        job_id = mk_job_id(f"{svs_p}|{ckpt_p}|{run_id}")
+        job_id = mk_job_id(f"{svs_p}|{ckpt_p}|{run_id}|{batch_size}|{sex}|{gpu}")
         job = {
             "job_id": job_id,
             "status": "queued",
@@ -804,6 +875,18 @@ class Handler(BaseHTTPRequestHandler):
             "clam_code": clam_code,
             "run_dir": run_dir,
         }
+
+        # Save a small run metadata immediately (so debugging is easy even if it crashes)
+        write_json(run_dir / "run_meta.json", {
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "svs_path": str(svs_p),
+            "gpu": gpu,
+            "batch_size": batch_size,
+            "sex": sex,
+            "forced_encoder": FORCED_ENCODER,
+            "forced_target_patch_size": FORCED_TARGET_PATCH_SIZE,
+            "checkpoint": str(ckpt_p),
+        })
 
         JOBS[job_id] = job
         t = threading.Thread(target=worker, args=(job_id,), daemon=True)

@@ -1,141 +1,206 @@
-# TOAD (modified) reproducibility package — TCGA primary-site classification
+# TOAD-TCGA-Reproducibility
 
-This repository accompanies our PLOS Digital Health submission:
+A fully reproducible evaluation of **Tumor Origin Assessment via Deep Learning (TOAD)** on **TCGA whole-slide images (WSI)**, with learning curves that quantify how performance scales as training data is reduced.
 
-**Fully reproducible TOAD learning curves on TCGA for primary site classification (ResNet-50 vs UNI)**
+This repository provides:
+- **Containerized preprocessing** (WSI patching + feature extraction)
+- **Containerized training/evaluation** with a **learning-curve runner** (x% training data)
+- A **local inference GUI** for running the TCGA-trained model on a slide and exporting JSON summaries
 
-## Abstract
-> Deep learning models for cancer histopathology are increasingly used to classify the primary site of origin, yet many existing approaches remain difficult to reproduce because the models themselves and their underlying training data are not fully accessible. As a result, it is often unclear how much data these methods require and how their accuracy degrades in limited- training data settings—a common scenario for many research groups. In this study, we provide a fully reproducible evaluation of the Tumor Origin Assessment via Deep Learning (TOAD) framework using only whole-slide images from the public The Cancer Genome Atlas (TCGA) repository. By systematically varying the amount of training data, we construct detailed learning curves that quantify how performance scales across data regimes. Our results show that a TCGA-only TOAD reproduction recovers much of the original model’s global performance and that per-class data requirements vary substantially across tissue types. We also compare two image encoders—a ResNet-50 pretrained on natural images and UNI, a pathology foundation model trained on large-scale histopathology data—and find that UNI consistently improves data efficiency, achieving equal or higher performance with substantially fewer training slides, especially in low- and medium-training data regimes. All code is released in containerized form to ensure strict reproducibility, and we provide a ready-to-use TCGA-trained TOAD model for immediate application. Overall, this work delivers the first open, data-driven benchmark of the TOAD framework on TCGA whole-slide images, clarifying its dependence on dataset size, identifying encoder-driven differences in data efficiency, and offering practical guidance for developing reproducible models for cancer site classification.
+## Why this exists
 
-## What you get in this repo
-- A **containerized** pipeline to train and evaluate a **TOAD-derived** model on **TCGA** for **primary site classification**.
-- A reproducibility runner that builds **learning curves** by training/evaluating at multiple label fractions (10% → 100%).
-- Extra logging
-
----
-
-# Key differences vs the original TOAD repository (upstream)
-
-This codebase is a **slightly modified version** of the original TOAD repo (see `UPSTREAM.md`). The main differences are:
-
-1. **Task definition changed (primary-site only).**  
-   The upstream TOAD code targets a broader setup (e.g., includes primary vs metastatic aspects).  
-   **Here we only classify the *primary site***, therefore:
-   - the **model head / architecture** and
-   - the **loss/objective**
-   are adjusted accordingly for single-task primary-site classification.
-
-2. **Built-in training on _x%_ of the dataset (learning curves).**  
-   We added scripting and argument plumbing to easily train/evaluate at a chosen label fraction (e.g., 10%, 20%, …, 100%), producing learning curves.
-
-3. **Patient stratification enabled by default.**  
-   We set `patient_strat=True` by default to ensure patient-level stratification during split creation and training.
-
-4. **We release a ready-to-use TCGA-trained classifier (100% data) using UNI features.**  
-   We provide the **trained classifier weights** obtained with **100% of TCGA training data** using **CLAM-extracted UNI features**, so users can immediately apply the model.
-
-5. **We release extracted features used in the paper.**  
-   We provide the extracted slide-level feature tensors (`.pt` files) used for training/evaluation:
-   - ResNet-50 features (ImageNet-pretrained encoder)
-   - UNI features (SSL pathology encoder)
-   See `MODEL_CARD.md` for artifact names and how to download/use them.
-
-6. **Containerized execution for strict reproducibility.**  
-   We provide a Singularity/Apptainer image (or recipe + checksum) to reproduce the exact software environment used in the paper (see `CONTAINER.md`).
-
-7. **More logging for traceability.**  
-   Each run writes:
-   - full stdout/stderr logs
-   - `run_meta.txt` with timestamps, label fraction, GPU id, container info, etc.
-
-A more detailed, file-by-file change summary is in `CHANGES.md`.
+Deep learning models for cancer histopathology are increasingly used to classify the primary site of origin, yet many approaches are difficult to reproduce because trained models and/or training data are not fully accessible. Here, we provide a **TCGA-only** reproduction of TOAD and a systematic evaluation across data regimes (learning curves), including an encoder comparison between **ResNet-50** and **UNI**.
 
 ---
 
-# Repository structure
+## Model and feature availability
 
+### Trained model weights
+- ✅ **Publicly released weights (via Zenodo):** **ResNet-based TOAD trained model weights** (AGPL-3.0).
+- ❌ **Not released:** **UNI-based TOAD trained model weights**.
+
+**Why UNI-based trained weights are not released:** the **UNI** encoder is distributed under terms that restrict redistribution. To respect those terms, we do **not** upload or bundle UNI model files, nor the trained TOAD weights that depend on UNI features.
+
+> You can still run UNI-based experiments: if you have approved UNI access, you can download UNI through the official channel and reproduce the UNI-based variant using this repository’s scripts.
+
+### Extracted features
+- ❌ **We do not distribute extracted feature files** (neither ResNet nor UNI features).  
+  Feature files can be very large and are derived from WSI data; instead, this repository provides **reproducible preprocessing** so you can generate features locally from TCGA slides.
+
+---
+
+## Data: downloading TCGA slides (GDC)
+
+Slides must be obtained from the **GDC portal** / **GDC Data Transfer Tool** using the **GDC file IDs** listed in:
+
+- `src_preprocessing/CLAM_encoder/dataset_csv/TCGA.csv`
+
+### Step 1 — Inspect which column contains the GDC file IDs
+From the repo root:
+```bash
+python3 - <<'PY'
+import pandas as pd
+p = "src_preprocessing/CLAM_encoder/dataset_csv/TCGA.csv"
+df = pd.read_csv(p)
+print("Columns:", list(df.columns))
+print(df.head(2))
+PY
 ```
-.
-├── run_exps.sh                  # main entry point: loops over label fractions
-├── src/                         # modified TOAD code used for experiments
-│   ├── run_python_scripts.sh
-│   ├── create_splits.py
-│   ├── main_mtl_concat.py
-│   ├── eval_mtl_concat.py
-│   ├── datasets/
-│   ├── utils/
-│   └── dataset_csv/
-├── containers/                  # optional: container recipe or pointer to image
-├── RESULTS/                     # outputs created by the runner (gitignored)
-└── docs/                        # optional extra notes
+
+### Step 2 — Export file IDs to a text file
+Replace `FILE_ID_COL` below with the correct column name you saw in Step 1 (commonly something like `file_id`):
+```bash
+FILE_ID_COL="file_id"  # <-- edit this
+
+python3 - <<PY
+import pandas as pd, os
+p = "src_preprocessing/CLAM_encoder/dataset_csv/TCGA.csv"
+col = os.environ["FILE_ID_COL"]
+df = pd.read_csv(p)
+assert col in df.columns, f"Column '{col}' not found. Available: {list(df.columns)}"
+df[col].dropna().astype(str).to_csv("gdc_file_ids.txt", index=False, header=False)
+print("Wrote gdc_file_ids.txt with", df[col].notna().sum(), "IDs")
+PY
+```
+
+### Step 3 — Download slides with the GDC Data Transfer Tool (`gdc-client`)
+Using `xargs` avoids very long command lines:
+```bash
+# Create an output folder for downloaded slides
+mkdir -p tcga_svs
+
+# Download each file ID
+cat gdc_file_ids.txt | xargs -n 1 -P 4 gdc-client download --no-related-files --dir tcga_svs
+```
+
+After download, point preprocessing to the folder containing the `.svs` files (or a folder tree that contains them).
+
+---
+
+## Artifacts (Zenodo)
+
+Large artifacts are **not** stored in git. You will download them from Zenodo and place them at the expected paths.
+
+**Containers**
+- `assets/containers/singularity_preprocessing.simg`
+- `assets/containers/singularity_train_eval.simg`
+
+**Public trained model weights (ResNet-based)**
+- `assets/inference_model_checkpoint/<your_model_file>.pt`
+
+**Zenodo DOI:** _TODO (add after publishing)_
+
+Recommended: verify integrity using `SHA256SUMS` from Zenodo:
+```bash
+sha256sum -c SHA256SUMS
 ```
 
 ---
 
-# Requirements
+## Quickstart
 
-# Data & feature preparation (use the original CLAM repo)
+### 0) Choose a container runtime (Singularity vs Apptainer)
 
-This repo consumes **precomputed patch features** by CLAM (https://github.com/mahmoodlab/CLAM).
+Some systems provide `singularity`, others provide `apptainer`. These tools are compatible for most usage, but the command name differs.
 
-TOAD training expects:
-```
-FEATURES/
-  └── pt_files/
-      ├── <slide_id>.pt
-      └── ...
-```
+To make the scripts portable, they support a `RUNTIME` variable:
+- If `RUNTIME` is not set, the script auto-detects `apptainer` first, then `singularity`.
+- You can override it explicitly:
+  ```bash
+  RUNTIME=apptainer bash run_preprocessing.sh ...
+  # or
+  RUNTIME=singularity bash run_preprocessing.sh ...
+  ```
 
-## Step 1 — obtain TCGA WSIs
-Follow TCGA/GDC access rules and your institutional requirements. We do not redistribute TCGA WSIs.
+### 1) Preprocessing (WSI → FEATURES)
 
-## Step 2 — extract features using the original CLAM pipeline
-Use the **original CLAM** repository (https://github.com/mahmoodlab/CLAM) to extract patch features, producing `FEATURES/pt_files/*.pt`.
+This script searches for `.svs` under `--input-dir` up to `--maxdepth` and creates:
+- `<out-root>/logs_and_metadata/` (per-slide logs + extracted metadata)
+- `<out-root>/FEATURES/` (feature files)
 
-High-level steps (see CLAM docs for exact commands and options):
-1. Create patches / coordinates (e.g., `create_patches_fp.py`)
-2. Extract features (e.g., `extract_features_fp.py`) to produce `pt_files/`
-
-**Encoder choice:** Run CLAM feature extraction with the ResNet-50 or UNI encoder.
-
-Make sure the output folder passed to this repo is the folder that directly contains `pt_files/`.
-
----
-
-# Running the experiments (learning curves)
-
-From the repository root:
+**Default encoder:** `uni_v1` (best-performing in our study).  
+If you do not have UNI access, use `--encoder resnet50_trunc`.
 
 ```bash
-bash run_exps.sh --features /path/to/FEATURES --gpu 0 --image /path/to/container.simg
+bash run_preprocessing.sh   --input-dir /abs/path/to/svs_folder_or_tree   --out-root  /abs/path/to/preprocessing_output   --gpu 0
 ```
 
-Outputs are created under:
-```
-RESULTS/RESULTS_EXP_10/
-RESULTS/RESULTS_EXP_20/
-...
-RESULTS/RESULTS_EXP_100/
+Example using ResNet features:
+```bash
+bash run_preprocessing.sh   --input-dir /abs/path/to/svs_folder_or_tree   --out-root  /abs/path/to/preprocessing_output   --encoder resnet50_trunc   --gpu 0
 ```
 
-Each run folder contains a full log and `run_meta.txt`.
+Useful options:
+- `--jobs` parallel slides on the same GPU
+- `--batch-size` feature extraction batch size (default 800)
+- `--target-patch-size` patch size (default 224)
+- `--maxdepth` search depth (default 2)
+- `--image` preprocessing container path (default `assets/containers/singularity_preprocessing.simg`)
+- `--code` preprocessing code path (default `src_preprocessing/CLAM_encoder`)
+
+### 2) Training & evaluation (FEATURES → learning curves)
+
+Runs training and evaluation for multiple training-data fractions (configured in `run_train_eval.sh`) and writes results under:
+- `train_eval_output/RESULTS_EXP_*/`
+
+```bash
+bash run_train_eval.sh   --features /abs/path/to/preprocessing_output/FEATURES   --gpu 0
+```
+
+> **Important:** the encoder used for feature extraction must match what you train/evaluate on.
+> - UNI features → train/eval a UNI-feature model (not distributed)
+> - ResNet features → train/eval a ResNet-feature model (public weights distributed)
+
+### 3) Inference GUI (local)
+
+Launch the GUI (default port 8765):
+```bash
+bash run_inference_GUI.sh
+```
+
+Change port:
+```bash
+PORT=9000 bash run_inference_GUI.sh
+```
+
+The GUI writes outputs under:
+- `output/inference_GUI_runs/<timestamp>/...`
+
+To locate where the GUI expects the trained model weights path:
+```bash
+rg -n "weights|model|\.pt|checkpoint" src_inference_GUI/*.py
+```
 
 ---
 
-# Reproducing the paper figures/tables
+## Repository structure (high level)
 
-- Learning curves: produced by running all label fractions
-- Per-class performance tables: computed from the evaluation logs/artifacts
-- Pretrained weights and feature artifacts: see `MODEL_CARD.md`
+- `run_preprocessing.sh` — containerized preprocessing
+- `run_train_eval.sh` — containerized learning-curve training/eval
+- `run_inference_GUI.sh` — run local GUI
+- `src_preprocessing/CLAM_encoder/` — preprocessing subset (derived from CLAM)
+- `src_train_eval/` — train/eval code (derived from TOAD + modifications)
+- `src_inference_GUI/` — local GUI + inference logic
+- `assets/containers/` — container build recipes (Dockerfiles)
+- `LICENSE`, `NOTICE`, `THIRD_PARTY_NOTICES.md`, `licenses/` — licensing + attribution
+- `CITATION.cff`, `DATA_AVAILABILITY.md`, `CHANGES.md` — paper-support files
 
 ---
 
-# License
+## Licensing & attribution (summary)
 
-This repository is released under the **GNU Affero General Public License v3.0 (AGPL-3.0)** because it is a modified version of upstream TOAD, which is AGPL-3.0 licensed. See `LICENSE`.
+- **Repository license:** GNU **AGPL-3.0** (see `LICENSE`).
+- Derived components (summary):
+  - **TOAD (AGPL-3.0):** basis for training/evaluation; modified for primary-site only, learning curves, patient-level stratification defaults, extra logging, and containerized execution support.
+  - **CLAM (GPL-3.0):** subset used for WSI patching and feature extraction (classifier training scripts excluded).
+- See `THIRD_PARTY_NOTICES.md` and `licenses/` for full details.
+
+### Model weights license
+- Public **ResNet-based** trained TOAD weights are released under **AGPL-3.0**.
+- UNI-based trained weights are not distributed (see “Model and feature availability”).
 
 ---
 
-# Contact
+## Citation
 
-Open a GitHub issue for questions/bugs, or contact the corresponding author listed in the manuscript.
+See `CITATION.cff`. Please also cite the associated paper and the Zenodo record (DOI) once available.

@@ -1,6 +1,6 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite it."
-title: "Fully reproducible TOAD learning curves on TCGA for primary site classification (ResNet-50 vs UNI)"
+title: "Reproducible open-data training and evaluation of the TOAD framework for tumor origin classification"
 type: software
 license: AGPL-3.0
 authors:
