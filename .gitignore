@@ -79,3 +79,27 @@ venv/
 env/
 .env/
 .venv/
+
+# Runtime outputs
+output/
+outputs/
+runs/
+logs/
+
+# HF / model caches (do not publish)
+**/models--MahmoodLab--UNI*
+**/models--MahmoodLab--UNI2-h*
+**/.cache/
+
+# Runtime outputs (do not commit)
+output/
+outputs/
+runs/
+logs/
+train_eval_output/
+preprocessing_output/
+
+# HF / model caches (do not publish)
+**/models--MahmoodLab--UNI*
+**/models--MahmoodLab--UNI2-h*
+**/.cache/
