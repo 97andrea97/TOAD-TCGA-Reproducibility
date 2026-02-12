@@ -17,7 +17,7 @@ Deep learning models for cancer histopathology are increasingly used to classify
 
 ### Trained model weights
 - ✅ **Publicly released weights (via Zenodo):** **ResNet-based TOAD trained model weights** (AGPL-3.0).
-- ❌ **Not released:** **UNI-based TOAD trained model weights**, the encoder is distributed under terms that restrict redistribution, but is available here: https://github.com/mahmoodlab/UNI.
+- ❌ **Not released:** **UNI-based TOAD trained model weights**, the encoder is distributed under terms that restrict redistribution, but is available following the instructions:https://github.com/mahmoodlab/CLAM?tab=readme-ov-file#using-conch--uni-as-pretrained-encoder).
 
 ---
 
