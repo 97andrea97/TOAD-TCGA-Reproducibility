@@ -27,15 +27,13 @@ Slides must be obtained from the **GDC portal** / **GDC Data Transfer Tool** usi
 
 - `src_preprocessing/dataset_csv/TCGA.csv`
 
-```
-
 After download, point preprocessing to the folder containing the `.svs` files (or a folder tree that contains them).
 
 ---
 
 ## Artifacts (Zenodo)
 
-Large artifacts are **not** stored in git. You will download them from Zenodo and place them at the expected paths.
+Large artifacts are **not** stored in git. You should download them from Zenodo and place them at the expected paths.
 
 **Containers**
 - `assets/containers/singularity_preprocessing.simg`
